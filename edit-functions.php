@@ -4,8 +4,11 @@
  */
 add_filter ( 'woocommerce_account_menu_items', 'apkee_more_links' );
 function apkee_more_links( $menu_links ){
- 
-	// we will hook "apkee-my-account-links" later
+
+	//刪除 Address
+	unset( $menu_links['edit-address'] ); // Addresses
+
+	//新堦：we will hook "apkee-my-account-links" later
 	//$new = array( 'apkee-my-account-link1' => __('Billing Address', 'woocommerce') );
  
 	// or in case you need 2 links
