@@ -1,0 +1,20 @@
+/* 喺 theme 嘅 custom CSS 份面
+ * 改靚啲個 wooo my-account 頁 nav menu
+ */
+.woocommerce-MyAccount-navigation ul {
+	display: table;
+	float: left;
+	list-style-type: none;
+	margin: 0;
+	padding: 0;
+	width: 30%;
+	height: 300px;
+}
+.woocommerce-MyAccount-navigation-link {
+	float: left;
+	margin: 2px;
+	padding: 10px;
+	background-color: lightgray;
+	min-width: 160px;
+}
+
