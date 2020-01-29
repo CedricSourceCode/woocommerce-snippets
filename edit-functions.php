@@ -68,3 +68,21 @@ function my_custom_insert_after_helper( $items, $new_items, $after ) {
 
     return $array;
 }
+
+
+// Flexible Checkout Fields 唔識處理 my-account edit-address，要自己加 filter
+// refer: https://wpbeaches.com/remove-address-fields-in-woocommerce-checkout/
+add_filter( 'woocommerce_default_address_fields' , 'custom_override_checkout_fields_ek', 99 );
+// Remove some fields from billing form
+// Our hooked in function - $fields is passed via the filter!
+// Get all the fields - https://docs.woothemes.com/document/tutorial-customising-checkout-fields-using-actions-and-filters/
+function custom_override_checkout_fields_ek( $fields ) {
+	// Only on account pages
+	if( ! is_account_page() ) return $fields;
+
+	unset($fields['address_1']);
+	unset($fields['address_2']);
+	unset($fields['postcode']);
+
+	return $fields;
+}
