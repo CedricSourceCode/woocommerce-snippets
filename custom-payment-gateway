@@ -1,0 +1,492 @@
+<?php
+/**
+ ** 參考：https://stackoverflow.com/questions/53387002/add-a-custom-payment-gateway-with-additional-radio-buttons-in-woocommerce?answertab=votes#tab-top
+ *
+ * Plugin Name: WooCommerce Special Payment Gateway
+ * Plugin URI:
+ * Description: custom Special payment method.
+ * Author: Me
+ * Author URI: http://www.something.tld/
+ * Version: 1.1.0
+ * Text Domain: wcpg-special
+ * Domain Path: /i18n/languages/
+ *
+ * Copyright: (c) 2018
+ *
+ * License: GNU General Public License v3.0
+ * License URI: http://www.gnu.org/licenses/gpl-3.0.html
+ *
+ * @package   wcpg-special
+ * @author    Me
+ * @category  Admin
+ * @copyright Copyright (c)  2016-2018
+ * @license   http://www.gnu.org/licenses/gpl-3.0.html GNU General Public License v3.0
+ */
+defined( 'ABSPATH' ) or exit;
+// Make sure WooCommerce is active
+if ( ! in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', get_option( 'active_plugins' ) ) ) ) {
+    return;
+}
+
+/**
+ * Add the gateway to WC Available Gateways
+ *
+ * @since 1.0.0
+ * @param array $gateways all available WC gateways
+ * @return array $gateways all WC gateways + Custom Special gateway
+ */
+function wc_add_special_to_gateways( $gateways ) {
+    $gateways[] = 'WC_Gateway_Special';
+    return $gateways;
+}
+add_filter( 'woocommerce_payment_gateways', 'wc_add_special_to_gateways' );
+
+/**
+ * Adds plugin page links
+ *
+ * @since 1.0.0
+ * @param array $links all plugin links
+ * @return array $links all plugin links + our custom links (i.e., "Settings")
+ */
+function wc_special_gateway_plugin_links( $links ) {
+    $plugin_links = array(
+        '<a href="' . admin_url( 'admin.php?page=wc-settings&tab=checkout&section=special_payment' ) . '">' . __( 'Configure', 'wcpg-special' ) . '</a>'
+    );
+    return array_merge( $plugin_links, $links );
+}
+add_filter( 'plugin_action_links_' . plugin_basename( __FILE__ ), 'wc_special_gateway_plugin_links' );
+
+/**
+ * Custom Payment Gateway
+ *
+ * Provides an Custom Payment Gateway; mainly for testing purposes.
+ * We load it later to ensure WC is loaded first since we're extending it.
+ *
+ * @class       WC_Gateway_Special
+ * @extends     WC_Payment_Gateway
+ * @version     1.0.0
+ * @package     WooCommerce/Classes/Payment
+ * @author      Me
+ */
+add_action( 'plugins_loaded', 'wc_special_gateway_init', 11 );
+function wc_special_gateway_init() {
+    class WC_Gateway_Special extends WC_Payment_Gateway {
+
+        public $domain;
+
+        /**
+         * Constructor for the gateway.
+         */
+        public function __construct() {
+            $this->id                 = 'special_payment';
+            $this->domain             = 'wcpg-special';
+            $this->icon               = apply_filters('woocommerce_payment_gateway_icon', '');
+            $this->has_fields         = false;
+            $this->method_title       = __( 'Custom Payment', $this->domain );
+
+            // Define "payment type" radio buttons options field
+            $this->options = array(
+                'type1' => __( 'Type 1', $this->domain ),
+                'type2' => __( 'Type 2', $this->domain ),
+                'type3' => __( 'Type 3', $this->domain ),
+            );
+
+            // Load the settings.
+            $this->init_form_fields();
+            $this->init_settings();
+
+            // Define user set variables
+            $this->title        = $this->get_option( 'title' );
+            $this->description  = $this->get_option( 'description' );
+            $this->instructions = $this->get_option( 'instructions' );
+            $this->order_status = $this->get_option( 'order_status' );
+            $this->status_text  = $this->get_option( 'status_text' );
+
+            // Actions
+            add_action( 'woocommerce_update_options_payment_gateways_' . $this->id, array( $this, 'process_admin_options' ) );                      //* Save 這個 payment 的 admin settings */
+            add_action( 'woocommerce_checkout_create_order', array( $this, 'save_order_payment_type_meta_data' ), 10, 2 );
+            add_filter( 'woocommerce_get_order_item_totals', array( $this, 'display_transaction_type_order_item_totals'), 10, 3 );
+            add_action( 'woocommerce_admin_order_data_after_billing_address',  array( $this, 'display_payment_type_order_edit_pages'), 10, 1 );
+            add_action( 'woocommerce_thankyou_' . $this->id, array( $this, 'thankyou_page' ) );
+
+            // Customer Emails
+            add_action( 'woocommerce_email_before_order_table', array( $this, 'email_instructions' ), 10, 3 );
+
+            // 試下加多幾個 fields
+            add_action( 'woocommerce_register_form_start', 'wooc_extra_register_fields' );
+        }
+        /**
+         ** 要喺 WooCommerce > Settings > Payments > Custom Payment 填嘅資料
+         * Initialize Gateway Settings Form Fields
+         */
+        public function init_form_fields() {
+            $this->form_fields = apply_filters( 'wc_special_payment_form_fields', array(
+                'enabled' => array(
+                    'title'   => __( 'Enable/Disable', $this->domain ),
+                    'type'    => 'checkbox',
+                    'label'   => __( 'Enable Special Payment', $this->domain ),
+                    'default' => 'yes'
+                ),
+                'title' => array(
+                    'title'       => __( 'Title', $this->domain ),
+                    'type'        => 'text',
+                    'description' => __( 'This controls the title for the payment method the customer sees during checkout.', $this->domain ),
+                    'default'     => __( 'Special Payment', $this->domain ),
+                    'desc_tip'    => true,
+                ),
+                'description' => array(
+                    'title'       => __( 'Description', $this->domain ),
+                    'type'        => 'textarea',
+                    'description' => __( 'Payment method description that the customer will see on your checkout.', $this->domain ),
+                    'default'     => __( 'Please remit payment to Store Name upon pickup or delivery.', $this->domain ),
+                    'desc_tip'    => true,
+                ),
+                'instructions' => array(
+                    'title'       => __( 'Instructions', $this->domain ),
+                    'type'        => 'textarea',
+                    'description' => __( 'Instructions that will be added to the thank you page and emails.', $this->domain ),
+                    'default'     => '', // Empty by default
+                    'desc_tip'    => true,
+                ),
+                'order_status' => array(
+                    'title'       => __( 'Order Status', $this->domain ),
+                    'type'        => 'select',
+                    'description' => __( 'Choose whether order status you wish after checkout.', $this->domain ),
+                    'default'     => 'wc-completed',
+                    'desc_tip'    => true,
+                    'class'       => 'wc-enhanced-select',
+                    'options'     => wc_get_order_statuses()
+                ),
+                'status_text' => array(
+                    'title'       => __( 'Order Status Text', $this->domain ),
+                    'type'        => 'text',
+                    'description' => __( 'Set the text for the selected order status.', $this->domain ),
+                    'default'     => __( 'Order is completed', $this->domain ),
+                    'desc_tip'    => true,
+                ),
+                //* 參考：https://www.ibenic.com/additional-woocommerce-settings-pages-for-a-payment-gateway/
+                'screen_button' => array(
+                    'id'    => 'screen_button',
+                    'type'  => 'screen_button',
+                    'title' => __( 'Other Settings', $this->domain ),
+                    'description' => __( 'Other Settings', $this->domain ),
+                    'desc_tip'    => true,
+                ),
+                'media_selector' => array(
+                    'id'    => 'media_selector',
+                    'type'  => 'media_selector',
+                    'title' => __( 'Media Selector', $this->domain ),
+                    'description' => __( 'Allows you to select a file from Media Library.', $this->domain ),
+                    'desc_tip'    => true,
+                )
+            ) );
+        }
+
+        public function wooc_extra_register_fields() {?>
+            <p class="form-row form-row-wide">
+            <label for="reg_billing_phone"><?php _e( 'Phone', 'woocommerce' ); ?></label>
+            <input type="text" class="input-text" name="billing_phone" id="reg_billing_phone" value="<?php esc_attr_e( $_POST['billing_phone'] ); ?>" />
+            </p>
+            <p class="form-row form-row-first">
+            <label for="reg_billing_first_name"><?php _e( 'First name', 'woocommerce' ); ?><span class="required">*</span></label>
+            <input type="text" class="input-text" name="billing_first_name" id="reg_billing_first_name" value="<?php if ( ! empty( $_POST['billing_first_name'] ) ) esc_attr_e( $_POST['billing_first_name'] ); ?>" />
+            </p>
+            <p class="form-row form-row-last">
+            <label for="reg_billing_last_name"><?php _e( 'Last name', 'woocommerce' ); ?><span class="required">*</span></label>
+            <input type="text" class="input-text" name="billing_last_name" id="reg_billing_last_name" value="<?php if ( ! empty( $_POST['billing_last_name'] ) ) esc_attr_e( $_POST['billing_last_name'] ); ?>" />
+            </p>
+            <div class="clear"></div>
+            <?php
+        }
+
+        /**
+         * Output the "payment type" radio buttons fields in checkout.
+         */
+        public function payment_fields(){
+            if ( $description = $this->get_description() ) {
+                echo wpautop( wptexturize( $description ) );
+            }
+
+            echo '<style>#transaction_type_field label.radio { display:inline-block; margin:0 .8em 0 .4em}</style>';
+
+            $option_keys = array_keys($this->options);
+
+            woocommerce_form_field( 'transaction_type', array(
+                'type'          => 'radio',
+                'class'         => array('transaction_type form-row-wide'),
+                'label'         => __('Payment Information', $this->domain),
+                'options'       => $this->options,
+            ), reset( $option_keys ) );
+        }
+
+        /** 自定義 setting page 加 button
+         * 參考：https://www.ibenic.com/additional-woocommerce-settings-pages-for-a-payment-gateway/
+         *      https://docs.woocommerce.com/wc-apidocs/source-class-WC_Settings_API.html#398-439
+         * 
+         * Screen button Field
+         */
+        public function generate_screen_button_html( $key, $data ) { 
+            $field_key = $this->get_field_key( $key );
+            $defaults  = array(
+                'title'             => '',
+                'disabled'          => false,
+                'class'             => '',
+                'css'               => '',
+                'placeholder'       => '',
+                'type'              => 'text',
+                'desc_tip'          => false,
+                'description'       => '',
+                'custom_attributes' => array(),
+            );
+
+            $data = wp_parse_args( $data, $defaults );
+
+            ob_start();
+            ?>
+            <tr valign="top">
+                <th scope="row" class="titledesc">
+                    <label for="<?php echo esc_attr( $field_key ); ?>"><?php echo wp_kses_post( $data['title'] ); ?> <?php echo $this->get_tooltip_html( $data ); // WPCS: XSS ok. ?></label>
+                </th>
+                <td colspan="2" class="forminp forminp-<?php echo sanitize_title( $value['type'] ) ?>">
+                    <fieldset>
+                        <legend class="screen-reader-text"><span><?php echo wp_kses_post( $data['title'] ); ?></span></legend>
+                        <a href="<?php echo admin_url( 'admin.php?page=wc-settings&tab=checkout&section=paypal&screen=other' ); ?>" class="button"><?php _e( 'Go to Other Settings', 'custom_paypal' ); ?></a>
+                        <a href="<?php echo admin_url( 'admin.php?page=wc-settings&tab=checkout&section=paypal&screen=orders' ); ?>" class="button"><?php _e( 'Orders Paid with This', 'custom_paypal' ); ?></a>
+                    </fieldset>
+                </td>
+            </tr>
+            <?php
+
+            return ob_get_clean();
+        }
+        public function generate_media_selector_html( $key, $data ) { 
+            $field_key = $this->get_field_key( $key );
+            $defaults  = array(
+                'title'             => '',
+                'disabled'          => false,
+                'class'             => '',
+                'css'               => '',
+                'placeholder'       => '',
+                'type'              => 'text',
+                'desc_tip'          => false,
+                'description'       => '',
+                'custom_attributes' => array(),
+            );
+
+            $data = wp_parse_args( $data, $defaults );
+
+            ob_start();
+            ?>
+            <tr valign="top">
+                <th scope="row" class="titledesc">
+                    <label for="<?php echo esc_attr( $field_key ); ?>"><?php echo wp_kses_post( $data['title'] ); ?> <?php echo $this->get_tooltip_html( $data ); // WPCS: XSS ok. ?></label>
+                </th>
+                <td colspan="2" class="forminp forminp-<?php echo sanitize_title( $value['type'] ) ?>">
+                    <fieldset>
+                        <legend class="screen-reader-text"><span><?php echo wp_kses_post( $data['title'] ); ?></span></legend>
+                        <input class="input-text regular-input <?php echo esc_attr( $data['class'] ); ?>"
+                            type="text" 
+                            name="<?php echo esc_attr( $field_key ); ?>_text" 
+                            id="<?php echo esc_attr( $field_key ); ?>_text" 
+                            class="input-text regular-input"
+                            style="<?php echo esc_attr( $data['css'] ); ?>" 
+                            value="<?php echo esc_attr( $this->get_option( $key ) ); ?>" 
+                            placeholder="<?php echo esc_attr( $data['placeholder'] ); ?>" 
+                            <?php disabled( $data['disabled'], true ); ?> 
+                            <?php echo $this->get_custom_attribute_html( $data ); // WPCS: XSS ok. ?> />
+                        <input id="upload_image_button" type="button" class="button" value="<?php _e( 'Upload image' ); ?>" />
+                        <input type='hidden' name='image_attachment_id' id='image_attachment_id' value='<?php echo get_option( 'media_selector_attachment_id' ); ?>'>
+                        <div class='image-preview-wrapper'>
+                            <img id='image-preview' src='<?php echo wp_get_attachment_url( get_option( 'media_selector_attachment_id' ) ); ?>' height='100'>
+                        </div>
+                    </fieldset>
+                </td>
+            </tr>
+            <?php
+
+            return ob_get_clean();
+        }
+
+        /**
+         * Save the chosen payment type as order meta data.
+         *
+         * @param object $order
+         * @param array $data
+         */
+        public function save_order_payment_type_meta_data( $order, $data ) {
+            if ( $data['payment_method'] === $this->id && isset($_POST['transaction_type']) )
+                $order->update_meta_data('_transaction_type', esc_attr($_POST['transaction_type']) );
+        }
+
+        /**
+         * Output for the order received page.
+         *
+         * @param int $order_id
+         */
+        public function thankyou_page( $order_id ) {
+            $order = wc_get_order( $order_id );
+
+            if ( $this->instructions ) {
+                echo wpautop( wptexturize( $this->instructions ) );
+            }
+        }
+
+        /**
+         * Display the chosen payment type on the order edit pages (backend)
+         *
+         * @param object $order
+         */
+        public function display_payment_type_order_edit_pages( $order ){
+            if( $this->id === $order->get_payment_method() && $order->get_meta('_transaction_type') ) {
+                $options  = $this->options;
+                echo '<p><strong>'.__('Transaction type').':</strong> ' . $options[$order->get_meta('_transaction_type')] . '</p>';
+            }
+        }
+
+        /**
+         * Display the chosen payment type on order totals table
+         *
+         * @param array    $total_rows
+         * @param WC_Order $order
+         * @param bool     $tax_display
+         * @return array
+         */
+        public function display_transaction_type_order_item_totals( $total_rows, $order, $tax_display ){
+            if( is_a( $order, 'WC_Order' ) && $order->get_meta('_transaction_type') ) {
+                $new_rows = []; // Initializing
+                $options  = $this->options;
+
+                // Loop through order total lines
+                foreach( $total_rows as $total_key => $total_values ) {
+                    $new_rows[$total_key] = $total_values;
+                    if( $total_key === 'payment_method' ) {
+                        $new_rows['payment_type'] = [
+                            'label' => __("Transaction type", $this->domain) . ':',
+                            'value' => $options[$order->get_meta('_transaction_type')],
+                        ];
+                    }
+                }
+
+                $total_rows = $new_rows;
+            }
+            return $total_rows;
+        }
+
+        /**
+         * Add content to the WC emails.
+         *
+         * @access public
+         * @param WC_Order $order
+         * @param bool $sent_to_admin
+         * @param bool $plain_text
+         */
+        public function email_instructions( $order, $sent_to_admin, $plain_text = false ) {
+            if ( $this->instructions && ! $sent_to_admin && $this->id === $order->get_payment_method()
+            && $order->has_status( $this->order_status ) ) {
+                echo wpautop( wptexturize( $this->instructions ) ) . PHP_EOL;
+            }
+        }
+
+        /**
+         ** 參考：https://docs.woocommerce.com/document/payment-gateway-api/
+         * 
+         * Process the payment and return the result
+         *
+         * @param int $order_id
+         * @return array
+         */
+        public function process_payment( $order_id ) {
+            $order = wc_get_order( $order_id );
+
+            // Mark as on-hold (we're awaiting the payment)
+            $order->update_status( $this->order_status, $this->status_text );
+
+            // Reduce stock levels
+            wc_reduce_stock_levels( $order->get_id() );
+
+            // Remove cart
+            WC()->cart->empty_cart();
+
+            // Return thankyou redirect
+            return array(
+                'result'    => 'success',
+                'redirect'  => $this->get_return_url( $order )
+            );
+        }
+    }
+}
+
+
+/**
+ * 將段 JScript 臨時放喺 Admin footer 度，正式整 plugin 嘅話就要放喺 enqueue 度
+ * The following script will do a couple of things;
+ * 1. On the ‘#upload_image_button’ button click, it will open the media selector
+ * 2. Set the image preview ‘src’ so the preview will be immediately visible
+ * 3/. Set the attachment ID in the hidden input field for us to save later
+ */
+add_action( 'admin_footer', 'media_selector_print_scripts' );
+function media_selector_print_scripts() {
+
+	$my_saved_attachment_post_id = get_option( 'media_selector_attachment_id', 0 );
+
+	?><script type='text/javascript'>
+
+		jQuery( document ).ready( function( $ ) {
+
+			// Uploading files
+			var file_frame;
+			var wp_media_post_id = wp.media.model.settings.post.id; // Store the old id
+			var set_to_post_id = <?php echo $my_saved_attachment_post_id; ?>; // Set this
+
+			jQuery('#upload_image_button').on('click', function( event ){
+
+				event.preventDefault();
+
+				// If the media frame already exists, reopen it.
+				if ( file_frame ) {
+					// Set the post ID to what we want
+					file_frame.uploader.uploader.param( 'post_id', set_to_post_id );
+					// Open frame
+					file_frame.open();
+					return;
+				} else {
+					// Set the wp.media post id so the uploader grabs the ID we want when initialised
+					wp.media.model.settings.post.id = set_to_post_id;
+				}
+
+				// Create the media frame.
+				file_frame = wp.media.frames.file_frame = wp.media({
+					title: 'Select a image to upload',
+					button: {
+						text: 'Use this image',
+					},
+					multiple: false	// Set to true to allow multiple files to be selected
+				});
+
+				// When an image is selected, run a callback.
+				file_frame.on( 'select', function() {
+					// We set multiple to false so only get one image from the uploader
+					attachment = file_frame.state().get('selection').first().toJSON();
+
+					// Do something with attachment.id and/or attachment.url here
+					$( '#image-preview' ).attr( 'src', attachment.url ).css( 'width', 'auto' );
+					$( '#image_attachment_id' ).val( attachment.id );
+					$( '#woocommerce_special_payment_media_selector_text' ).attr( 'value', attachment.url );
+
+					// Restore the main post ID
+					wp.media.model.settings.post.id = wp_media_post_id;
+				});
+
+					// Finally, open the modal
+					file_frame.open();
+			});
+
+			// Restore the main ID when the add media button is pressed
+			jQuery( 'a.add_media' ).on( 'click', function() {
+				wp.media.model.settings.post.id = wp_media_post_id;
+			});
+		});
+
+	</script><?php
+
+}
